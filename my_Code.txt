@@ -1,0 +1,227 @@
+!pip install -q umap-learn
+
+from google.colab import files
+import io, os, time, json
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import mean_squared_error
+import umap.umap_ as umap
+
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+seed = 42
+np.random.seed(seed)
+tf.random.set_seed(seed)
+
+ts = time.strftime("%Y%m%d-%H%M%S")
+OUTDIR = f"/content/outputs_{ts}"
+os.makedirs(OUTDIR, exist_ok=True)
+
+%config InlineBackend.figure_format = 'retina'
+plt.rcParams.update({
+    "figure.figsize": (8, 6),
+    "savefig.dpi": 400,
+    "figure.dpi": 160,
+    "font.size": 12
+})
+
+def savefig_hq(fname_base):
+    for ext in ["png", "pdf", "svg"]:
+        plt.savefig(os.path.join(OUTDIR, f"{fname_base}.{ext}"),
+                    bbox_inches="tight", pad_inches=0.05)
+
+print("OUTDIR:", OUTDIR)
+
+uploaded = files.upload()
+if not uploaded:
+    raise SystemExit("No file uploaded.")
+
+file_name = list(uploaded.keys())[0]
+if not file_name.lower().endswith(".csv"):
+    raise SystemExit("Please upload a .csv file.")
+
+try:
+    data = pd.read_csv(io.BytesIO(uploaded[file_name]))
+except Exception:
+    data = pd.read_csv(io.BytesIO(uploaded[file_name]), sep=";")
+
+X = data.values.astype(float)
+
+mask_row = ~np.all(np.isnan(X), axis=1)
+mask_col = ~np.all(np.isnan(X), axis=0)
+X = X[mask_row][:, mask_col]
+
+col_mean = np.nanmean(X, axis=0)
+inds = np.where(np.isnan(X))
+if inds[0].size > 0:
+    X[inds] = np.take(col_mean, inds[1])
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+pd.DataFrame(X_scaled[:10, :]).to_csv(os.path.join(OUTDIR, "Xscaled_head.csv"), index=False)
+
+while True:
+    try:
+        latent_dim = int(input(f"latent_dim (1..{X_scaled.shape[1]}): ").strip())
+        if 1 <= latent_dim <= X_scaled.shape[1]:
+            break
+    except Exception:
+        pass
+
+input_dim = X_scaled.shape[1]
+
+encoder_input = layers.Input(shape=(input_dim,), name="ae_input")
+x = layers.Dense(128, activation="relu")(encoder_input)
+x = layers.Dense(64, activation="relu")(x)
+x = layers.Dense(32, activation="relu")(x)
+latent = layers.Dense(latent_dim, activation="linear", name="latent")(x)
+
+x = layers.Dense(32, activation="relu")(latent)
+x = layers.Dense(64, activation="relu")(x)
+x = layers.Dense(128, activation="relu")(x)
+decoder_output = layers.Dense(input_dim, activation="linear", name="recon")(x)
+
+autoencoder = models.Model(encoder_input, decoder_output, name="autoencoder")
+encoder = models.Model(encoder_input, latent, name="encoder")
+
+autoencoder.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3), loss="mse")
+
+cbs = [
+    EarlyStopping(monitor="val_loss", patience=15, restore_best_weights=True),
+    ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=7, min_lr=1e-6, verbose=1)
+]
+
+history = autoencoder.fit(
+    X_scaled, X_scaled,
+    epochs=200,
+    batch_size=64,
+    shuffle=True,
+    validation_split=0.2,
+    callbacks=cbs,
+    verbose=1
+)
+
+pd.DataFrame(history.history).to_csv(os.path.join(OUTDIR, "training_history.csv"), index=False)
+
+X_reconstructed = autoencoder.predict(X_scaled, verbose=0)
+mse_overall = mean_squared_error(X_scaled, X_reconstructed)
+mse_per_sample = ((X_scaled - X_reconstructed) ** 2).mean(axis=1)
+mse_per_feature = ((X_scaled - X_reconstructed) ** 2).mean(axis=0)
+
+pd.DataFrame({"mse_per_sample": mse_per_sample}).to_csv(os.path.join(OUTDIR, "mse_per_sample.csv"), index=False)
+pd.DataFrame({"feature_index": np.arange(len(mse_per_feature)),
+              "mse_per_feature": mse_per_feature}).to_csv(os.path.join(OUTDIR, "mse_per_feature.csv"), index=False)
+
+with open(os.path.join(OUTDIR, "metrics_summary.json"), "w") as f:
+    json.dump({"overall_mse": float(mse_overall), "latent_dim": int(latent_dim)}, f, indent=2)
+
+plt.figure()
+plt.plot(history.history["loss"], label="train")
+plt.plot(history.history["val_loss"], label="val")
+plt.xlabel("epoch"); plt.ylabel("mse")
+plt.legend()
+savefig_hq("training_curve")
+plt.show()
+
+MODELDIR = os.path.join(OUTDIR, "models")
+os.makedirs(MODELDIR, exist_ok=True)
+autoencoder.save(os.path.join(MODELDIR, "autoencoder.keras"))
+encoder.save(os.path.join(MODELDIR, "encoder.keras"))
+
+pd.DataFrame(X_reconstructed).to_csv(os.path.join(OUTDIR, "X_reconstructed.csv"), index=False)
+pd.DataFrame(X_scaled).to_csv(os.path.join(OUTDIR, "X_scaled.csv"), index=False)
+
+latent_features = encoder.predict(X_scaled, verbose=0)
+pd.DataFrame(latent_features).to_csv(os.path.join(OUTDIR, "latent_features.csv"), index=False)
+
+def plot_2d(arr2d, title, fname):
+    plt.figure(figsize=(8, 6))
+    plt.scatter(arr2d[:, 0], arr2d[:, 1], s=8)
+    plt.title(title)
+    savefig_hq(fname)
+    plt.show()
+
+def plot_3d(arr3d, title, fname):
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(arr3d[:, 0], arr3d[:, 1], arr3d[:, 2], s=8)
+    ax.set_title(title)
+    for ext in ["png", "pdf", "svg"]:
+        fig.savefig(os.path.join(OUTDIR, f"{fname}.{ext}"),
+                    bbox_inches="tight", pad_inches=0.05)
+    plt.show()
+
+if latent_dim == 1:
+    plt.figure()
+    plt.plot(latent_features[:, 0])
+    savefig_hq("latent_1d")
+    plt.show()
+elif latent_dim == 2:
+    plot_2d(latent_features, "latent (2D)", "latent_2d")
+elif latent_dim == 3:
+    plot_3d(latent_features, "latent (3D)", "latent_3d")
+else:
+    pca = PCA(n_components=2, random_state=seed)
+    latent_pca = pca.fit_transform(latent_features)
+    plot_2d(latent_pca, "latent (PCA->2D)", "latent_pca_2d")
+    pd.DataFrame({
+        "component": [1, 2],
+        "explained_variance_ratio": pca.explained_variance_ratio_
+    }).to_csv(os.path.join(OUTDIR, "pca_explained_variance.csv"), index=False)
+
+try:
+    reducer = umap.UMAP(n_components=2, random_state=seed)
+    latent_umap = reducer.fit_transform(latent_features)
+    plot_2d(latent_umap, "latent (UMAP 2D)", "latent_umap_2d")
+except Exception as e:
+    print("UMAP failed:", e)
+
+try:
+    tsne = TSNE(n_components=2, perplexity=30, random_state=seed, init="random", n_iter=1000)
+    latent_tsne = tsne.fit_transform(latent_features)
+    plot_2d(latent_tsne, "latent (t-SNE 2D)", "latent_tsne_2d")
+except Exception as e:
+    print("t-SNE failed:", e)
+
+n_examples = min(9, X_scaled.shape[0])
+idx = np.linspace(0, X_scaled.shape[0] - 1, n_examples).astype(int)
+
+fig, axes = plt.subplots(n_examples, 1, figsize=(10, 2 * n_examples))
+for i, ax in zip(idx, axes):
+    ax.plot(X_scaled[i, :], label="orig", linewidth=1)
+    ax.plot(X_reconstructed[i, :], label="recon", linewidth=1, linestyle="--")
+    ax.set_title(f"idx={i} mse={mse_per_sample[i]:.4e}")
+    ax.legend(loc="upper right", fontsize="small")
+plt.tight_layout()
+for ext in ["png", "pdf", "svg"]:
+    fig.savefig(os.path.join(OUTDIR, f"example_reconstructions.{ext}"),
+                bbox_inches="tight", pad_inches=0.05)
+plt.show()
+
+saved_files = []
+for root, _, flist in os.walk(OUTDIR):
+    for f in flist:
+        saved_files.append(os.path.join(root, f))
+
+with open(os.path.join(OUTDIR, "run_summary.json"), "w") as f:
+    json.dump({
+        "outdir": OUTDIR,
+        "num_saved_files": len(saved_files),
+        "examples": saved_files[:30],
+        "overall_mse": float(mse_overall),
+        "latent_dim": int(latent_dim)
+    }, f, indent=2)
+
+print("Done. OUTDIR:", OUTDIR)
+
+!zip -r -q /content/outputs.zip "$OUTDIR"
+print("Created /content/outputs.zip")
