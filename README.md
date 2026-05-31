@@ -4,7 +4,7 @@ Code and reproducibility materials for the manuscript:
 "Deep Learning-Based Hydroclimate Zoning Informed by Evapotranspiration Patterns and Compared with Köppen Classification"
 
 ## How to run (Google Colab)
-1. Open `notebooks/01_autoencoder_pipeline.ipynb` in Colab.
+1. Open `notebooks/autoencoder_pipeline.ipynb` in Colab.
 2. Upload a `.csv` file when prompted.
 3. Choose `latent_dim` when asked.
 4. Outputs will be written to `outputs_YYYYMMDD-HHMMSS/`.
