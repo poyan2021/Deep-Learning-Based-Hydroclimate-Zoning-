@@ -1,0 +1,449 @@
+!pip install -q umap-learn
+
+from google.colab import files
+import io
+import os
+import json
+import time
+import random
+import warnings
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import tensorflow as tf
+import umap.umap_ as umap
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import mean_squared_error
+from tensorflow.keras import layers, models
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+warnings.filterwarnings("ignore")
+
+SEED = 42
+os.environ["PYTHONHASHSEED"] = str(SEED)
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+%config InlineBackend.figure_format = "retina"
+
+plt.rcParams.update({
+    "figure.figsize": (8, 6),
+    "figure.dpi": 160,
+    "savefig.dpi": 400,
+    "font.size": 12
+})
+
+TIMESTAMP = time.strftime("%Y%m%d-%H%M%S")
+OUTDIR = f"/content/outputs_{TIMESTAMP}"
+MODELDIR = os.path.join(OUTDIR, "models")
+
+os.makedirs(OUTDIR, exist_ok=True)
+os.makedirs(MODELDIR, exist_ok=True)
+
+def savefig_hq(name):
+    for ext in ("png", "pdf", "svg"):
+        plt.savefig(
+            os.path.join(OUTDIR, f"{name}.{ext}"),
+            bbox_inches="tight",
+            pad_inches=0.05
+        )
+
+def savefig_hq_fig(fig, name):
+    for ext in ("png", "pdf", "svg"):
+        fig.savefig(
+            os.path.join(OUTDIR, f"{name}.{ext}"),
+            bbox_inches="tight",
+            pad_inches=0.05
+        )
+
+def plot_2d(data, title, fname):
+    plt.figure(figsize=(8, 6))
+    plt.scatter(data[:, 0], data[:, 1], s=8)
+    plt.xlabel("Dim1")
+    plt.ylabel("Dim2")
+    plt.title(title)
+    savefig_hq(fname)
+    plt.show()
+
+def plot_3d(data, title, fname):
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(data[:, 0], data[:, 1], data[:, 2], s=8)
+    ax.set_xlabel("Dim1")
+    ax.set_ylabel("Dim2")
+    ax.set_zlabel("Dim3")
+    ax.set_title(title)
+    savefig_hq_fig(fig, fname)
+    plt.show()
+
+print(f"Output Directory: {OUTDIR}")
+
+uploaded = files.upload()
+
+if not uploaded:
+    raise SystemExit("No CSV file uploaded.")
+
+FILENAME = next(iter(uploaded))
+
+if not FILENAME.lower().endswith(".csv"):
+    raise SystemExit("Only CSV files are supported.")
+
+try:
+    df = pd.read_csv(io.BytesIO(uploaded[FILENAME]))
+except:
+    df = pd.read_csv(io.BytesIO(uploaded[FILENAME]), sep=";")
+
+print("Shape:", df.shape)
+display(df.head())
+
+X = df.to_numpy(dtype=np.float32)
+
+X = X[
+    ~np.all(np.isnan(X), axis=1)
+][:,
+    ~np.all(np.isnan(X), axis=0)
+]
+
+if np.isnan(X).any():
+    col_mean = np.nanmean(X, axis=0)
+    r, c = np.where(np.isnan(X))
+    X[r, c] = col_mean[c]
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X).astype(np.float32)
+
+pd.DataFrame(X_scaled[:10]).to_csv(
+    os.path.join(OUTDIR, "Xscaled_head.csv"),
+    index=False
+)
+
+while True:
+    try:
+        latent_dim = int(input("Latent Dimension: ").strip())
+        if 1 <= latent_dim <= X_scaled.shape[1]:
+            break
+    except:
+        pass
+
+INPUT_DIM = X_scaled.shape[1]
+
+inputs = layers.Input(shape=(INPUT_DIM,), name="input")
+
+x = layers.Dense(256, activation="relu")(inputs)
+x = layers.BatchNormalization()(x)
+
+x = layers.Dense(128, activation="relu")(x)
+x = layers.BatchNormalization()(x)
+
+x = layers.Dense(64, activation="relu")(x)
+x = layers.BatchNormalization()(x)
+
+latent = layers.Dense(
+    latent_dim,
+    activation="linear",
+    name="latent"
+)(x)
+
+x = layers.Dense(64, activation="relu")(latent)
+x = layers.BatchNormalization()(x)
+
+x = layers.Dense(128, activation="relu")(x)
+x = layers.BatchNormalization()(x)
+
+x = layers.Dense(256, activation="relu")(x)
+
+outputs = layers.Dense(
+    INPUT_DIM,
+    activation="linear",
+    name="reconstruction"
+)(x)
+
+autoencoder = models.Model(inputs, outputs, name="Autoencoder")
+encoder = models.Model(inputs, latent, name="Encoder")
+
+autoencoder.compile(
+    optimizer=tf.keras.optimizers.Adam(1e-3),
+    loss="mse"
+)
+
+callbacks = [
+    EarlyStopping(
+        monitor="val_loss",
+        patience=15,
+        restore_best_weights=True
+    ),
+    ReduceLROnPlateau(
+        monitor="val_loss",
+        factor=0.5,
+        patience=7,
+        min_lr=1e-6,
+        verbose=1
+    )
+]
+
+history = autoencoder.fit(
+    X_scaled,
+    X_scaled,
+    epochs=200,
+    batch_size=128,
+    shuffle=True,
+    validation_split=0.2,
+    callbacks=callbacks,
+    verbose=1
+)
+
+pd.DataFrame(history.history).to_csv(
+    os.path.join(OUTDIR, "training_history.csv"),
+    index=False
+)
+
+X_reconstructed = autoencoder.predict(
+    X_scaled,
+    verbose=0
+)
+
+latent_features = encoder.predict(
+    X_scaled,
+    verbose=0
+)
+
+overall_mse = mean_squared_error(
+    X_scaled,
+    X_reconstructed
+)
+
+mse_per_sample = np.mean(
+    np.square(X_scaled - X_reconstructed),
+    axis=1
+)
+
+mse_per_feature = np.mean(
+    np.square(X_scaled - X_reconstructed),
+    axis=0
+)
+
+pd.DataFrame({
+    "mse_per_sample": mse_per_sample
+}).to_csv(
+    os.path.join(OUTDIR, "mse_per_sample.csv"),
+    index=False
+)
+
+pd.DataFrame({
+    "feature_index": np.arange(len(mse_per_feature)),
+    "mse_per_feature": mse_per_feature
+}).to_csv(
+    os.path.join(OUTDIR, "mse_per_feature.csv"),
+    index=False
+)
+
+with open(
+    os.path.join(OUTDIR, "metrics_summary.json"),
+    "w"
+) as f:
+    json.dump(
+        {
+            "overall_mse": float(overall_mse),
+            "latent_dim": latent_dim
+        },
+        f,
+        indent=2
+    )
+
+plt.figure()
+plt.plot(history.history["loss"], label="Train")
+plt.plot(history.history["val_loss"], label="Validation")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Training History")
+plt.legend()
+savefig_hq("training_curve")
+plt.show()
+
+autoencoder.save(
+    os.path.join(MODELDIR, "autoencoder.keras")
+)
+
+encoder.save(
+    os.path.join(MODELDIR, "encoder.keras")
+)
+
+pd.DataFrame(X_scaled).to_csv(
+    os.path.join(OUTDIR, "X_scaled.csv"),
+    index=False
+)
+
+pd.DataFrame(X_reconstructed).to_csv(
+    os.path.join(OUTDIR, "X_reconstructed.csv"),
+    index=False
+)
+
+pd.DataFrame(latent_features).to_csv(
+    os.path.join(OUTDIR, "latent_features.csv"),
+    index=False
+)
+
+if latent_dim == 1:
+    plt.figure()
+    plt.plot(latent_features[:, 0])
+    plt.title("Latent Space")
+    savefig_hq("latent_1d")
+    plt.show()
+
+elif latent_dim == 2:
+    plot_2d(
+        latent_features,
+        "Latent Space (2D)",
+        "latent_2d"
+    )
+
+elif latent_dim == 3:
+    plot_3d(
+        latent_features,
+        "Latent Space (3D)",
+        "latent_3d"
+    )
+
+else:
+    pca = PCA(
+        n_components=2,
+        random_state=SEED
+    )
+
+    latent_pca = pca.fit_transform(
+        latent_features
+    )
+
+    plot_2d(
+        latent_pca,
+        "Latent Space (PCA)",
+        "latent_pca_2d"
+    )
+
+    pd.DataFrame({
+        "component": [1, 2],
+        "explained_variance_ratio":
+            pca.explained_variance_ratio_
+    }).to_csv(
+        os.path.join(
+            OUTDIR,
+            "pca_explained_variance.csv"
+        ),
+        index=False
+    )
+
+try:
+    reducer = umap.UMAP(
+        n_components=2,
+        random_state=SEED
+    )
+
+    latent_umap = reducer.fit_transform(
+        latent_features
+    )
+
+    plot_2d(
+        latent_umap,
+        "UMAP Projection",
+        "latent_umap_2d"
+    )
+
+except:
+    pass
+
+try:
+    latent_tsne = TSNE(
+        n_components=2,
+        perplexity=30,
+        init="random",
+        random_state=SEED,
+        max_iter=1000
+    ).fit_transform(latent_features)
+
+    plot_2d(
+        latent_tsne,
+        "t-SNE Projection",
+        "latent_tsne_2d"
+    )
+
+except:
+    pass
+
+n_examples = min(9, X_scaled.shape[0])
+
+indices = np.linspace(
+    0,
+    X_scaled.shape[0] - 1,
+    n_examples
+).astype(int)
+
+fig, axes = plt.subplots(
+    n_examples,
+    1,
+    figsize=(10, 2 * n_examples)
+)
+
+if n_examples == 1:
+    axes = [axes]
+
+for idx, ax in zip(indices, axes):
+    ax.plot(
+        X_scaled[idx],
+        linewidth=1,
+        label="Original"
+    )
+
+    ax.plot(
+        X_reconstructed[idx],
+        linewidth=1,
+        linestyle="--",
+        label="Reconstructed"
+    )
+
+    ax.set_title(
+        f"Sample {idx} | MSE={mse_per_sample[idx]:.4e}"
+    )
+
+    ax.legend(
+        loc="upper right",
+        fontsize="small"
+    )
+
+plt.tight_layout()
+
+savefig_hq_fig(
+    fig,
+    "example_reconstructions"
+)
+
+plt.show()
+
+saved_files = [
+    os.path.join(root, file)
+    for root, _, files_ in os.walk(OUTDIR)
+    for file in files_
+]
+
+summary = {
+    "outdir": OUTDIR,
+    "num_saved_files": len(saved_files),
+    "overall_mse": float(overall_mse),
+    "latent_dim": latent_dim,
+    "examples": saved_files[:30]
+}
+
+with open(
+    os.path.join(OUTDIR, "run_summary.json"),
+    "w"
+) as f:
+    json.dump(summary, f, indent=2)
+
+print(json.dumps(summary, indent=2))
+
+!zip -r -q /content/outputs.zip "$OUTDIR"
+
+print("/content/outputs.zip")
