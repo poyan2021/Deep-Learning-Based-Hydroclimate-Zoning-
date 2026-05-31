@@ -2,6 +2,7 @@
 
 Code and reproducibility materials for the manuscript:
 "Deep Learning-Based Hydroclimate Zoning Informed by Evapotranspiration Patterns and Compared with Köppen Classification"
+For full reproducibility instructions, see `docs/reproducibility.md`.
 
 ## How to run (Google Colab)
 1. Open `notebooks/autoencoder_pipeline.ipynb` in Colab.
