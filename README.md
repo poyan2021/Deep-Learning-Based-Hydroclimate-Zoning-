@@ -22,4 +22,6 @@ Code and reproducibility materials for the manuscript:
 - Models: `models/autoencoder.keras`, `models/encoder.keras`
 
 ## License
-MIT (see LICENSE file).
+
+This project is licensed under the MIT License. See `LICENSE`.
+
