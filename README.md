@@ -10,7 +10,7 @@ This repository provides a complete, reproducible framework for hydroclimate zon
 
 This code supports the following manuscript:
 
-> *"Deep Learning-Based Hydroclimate Zoning Informed by Evapotranspiration Patterns and Compared with Köppen Classification"*
+> *"Functional Hydroclimate Regionalization from Long-Term Evapotranspiration Records Using a Reproducible Autoencoder–SOM Framework"*
 
 ---
 
