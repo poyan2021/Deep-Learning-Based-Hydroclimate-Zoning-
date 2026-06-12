@@ -1,28 +1,49 @@
-# Deep Learning-Based Hydroclimate Zoning (AE pipeline)
+# Deep Learning-Based Hydroclimate Zoning (AE + SOM Pipeline)
 
-Code and reproducibility materials for the manuscript:
-"Deep Learning-Based Hydroclimate Zoning Informed by Evapotranspiration Patterns and Compared with Köppen Classification"
-For full reproducibility instructions, see `docs/reproducibility.md`.
+This repository provides a complete, reproducible framework for hydroclimate zoning built around actual evapotranspiration (ETa) dynamics. The architecture combines:
 
-## How to run (Google Colab)
-1. Open `notebooks/autoencoder_pipeline.ipynb` in Colab.
-2. Upload a `.csv` file when prompted.
-3. Choose `latent_dim` when asked.
-4. Outputs will be written to `outputs_YYYYMMDD-HHMMSS/`.
+- Deep Autoencoder for nonlinear feature extraction
+- Self-Organizing Map (SOM) for preserving spatial topology
+- K-Means clustering for optimal zone delineation
+- Köppen-Geiger classification for result validation
+- GIS-based spatial analysis and mismatch detection
 
-## Input data format
-- Rows: samples/pixels
-- Columns: features (e.g., years or variables)
-- Missing values: allowed; imputed with column mean
+This code supports the following manuscript:
 
-## Outputs
-- `latent_features.csv`
-- `training_history.csv`
-- `metrics_summary.json`
-- Figures: training curve, latent visualizations, reconstructions
-- Models: `models/autoencoder.keras`, `models/encoder.keras`
+> *"Deep Learning-Based Hydroclimate Zoning Informed by Evapotranspiration Patterns and Compared with Köppen Classification"*
 
-## License
+---
 
-This project is licensed under the MIT License. See `LICENSE`.
+## What's different about this approach?
 
+The framework is fully data-driven and moves away from the constraints of traditional zoning methods. In short:
+
+- Long-term ETa time series are compressed into a compact latent space via deep autoencoder, letting the model learn hidden nonlinear relationships in the data
+- Spatial topology is preserved through SOM, so geographic neighborhoods are reflected in the final clustering
+- Hydroclimate zones are optimized directly in latent space
+- A quantitative spatial comparison against Köppen-Geiger classes is performed
+- Spatial mismatches are analyzed with uncertainty-aware diagnostics
+
+---
+
+## Processing Pipeline
+
+Raw ETa data (monthly, 1980–2023)
+        ↓
+Quality control (ET-QCA: physical, statistical & temporal filters)
+        ↓
+Normalization (Min-Max scaling)
+        ↓
+Deep Autoencoder (528 → 256 → 64 → 3 latent features)
+        ↓
+Latent feature space extraction
+        ↓
+Self-Organizing Map (20×20 Gaussian SOM)
+        ↓
+Codebook clustering (K-Means with optimal k selection)
+        ↓
+Hydroclimate zone delineation
+        ↓
+Validation against Köppen-Geiger climate classes
+        ↓
+GIS mapping & spatial mismatch analysis
